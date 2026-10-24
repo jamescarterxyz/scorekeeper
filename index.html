@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScoreKeeper — game night scores, kept honestly</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:720px;margin:24px auto;padding:0 16px;color:#1e293b}
+  h1{font-size:1.6rem} h2{font-size:1.1rem;margin-top:28px}
+  input,button{font-size:1rem;padding:8px 10px;border-radius:8px;border:1px solid #cbd5e1}
+  button{background:#0f172a;color:#fff;cursor:pointer;border:none}
+  button.secondary{background:#fff;color:#0f172a;border:1px solid #cbd5e1}
+  table{border-collapse:collapse;width:100%;margin-top:12px}
+  th,td{border-bottom:1px solid #e2e8f0;padding:8px;text-align:left}
+  tr.leader{background:#fef9c3;font-weight:700}
+  .banner{display:none;margin-top:16px;padding:16px;border-radius:12px;background:#dcfce7;font-size:1.2rem;font-weight:700}
+  .banner.show{display:block}
+  .muted{color:#64748b;font-size:.9rem}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+  .saved{border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:8px 0}
+</style>
+</head>
+<body>
+<h1>🏆 ScoreKeeper</h1>
+<p class="muted">Game-night scores for everyone at the table. No account, no server —
+everything lives in your browser. One file, yours to keep.</p>
+
+<section id="setup">
+  <h2>Players</h2>
+  <div class="row">
+    <input id="playerName" placeholder="Player name" autocomplete="off">
+    <button id="addPlayerBtn">Add player</button>
+  </div>
+  <div class="row">
+    <button id="startBtn">Start game</button>
+    <button id="newGameBtn" class="secondary">New game</button>
+  </div>
+</section>
+
+<section id="game" style="display:none">
+  <h2>Leaderboard</h2>
+  <table id="board"><thead><tr><th>#</th><th>Player</th><th>Total</th></tr></thead><tbody></tbody></table>
+
+  <h2>Add a round</h2>
+  <div id="roundInputs"></div>
+  <div class="row">
+    <button id="addRoundBtn">Add round</button>
+    <button id="undoBtn" class="secondary">Undo last round</button>
+    <button id="endBtn">End game</button>
+  </div>
+  <div id="winnerBanner" class="banner"></div>
+
+  <h2>Round history</h2>
+  <table id="history"><thead><tr><th>Round</th><th>Scores</th></tr></thead><tbody></tbody></table>
+
+  <div class="row">
+    <button id="exportBtn" class="secondary">Export JSON</button>
+    <label class="secondary" style="padding:8px 10px;border-radius:8px;border:1px solid #cbd5e1;cursor:pointer">
+      Import JSON <input id="importFile" type="file" accept=".json,application/json" style="display:none">
+    </label>
+  </div>
+</section>
+
+<h2>Saved games</h2>
+<div id="savedList"><p class="muted">No saved games yet.</p></div>
+
+<script>
+(function () {
+  var KEY = "scorekeeper-current-v1";
+  var SAVED_KEY = "scorekeeper-saved-v1";
+  var game = load(KEY) || { players: [], rounds: [], finished: false };
+
+  function load(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
+  function save(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+  function el(id) { return document.getElementById(id); }
+
+  function totals() {
+    var t = {};
+    game.players.forEach(function (p) { t[p] = 0; });
+    game.rounds.forEach(function (r) {
+      game.players.forEach(function (p) { t[p] += (r[p] || 0); });
+    });
+    return t;
+  }
+
+  function render() {
+    save(KEY, game);
+    var t = totals();
+    var order = game.players.slice().sort(function (a, b) { return t[b] - t[a]; });
+    var tbody = el("board").querySelector("tbody");
+    tbody.innerHTML = "";
+    order.forEach(function (p, i) {
+      var tr = document.createElement("tr");
+      if (i === 0 && game.players.length > 1 && game.rounds.length > 0) tr.className = "leader";
+      tr.innerHTML = "<td>" + (i + 1) + "</td><td>" + esc(p) + "</td><td>" + t[p] + "</td>";
+      tbody.appendChild(tr);
+    });
+    var inputs = el("roundInputs");
+    inputs.innerHTML = "";
+    game.players.forEach(function (p) {
+      var label = document.createElement("label");
+      label.className = "row";
+      label.innerHTML = "<span style='min-width:90px'>" + esc(p) + "</span>" +
+        "<input type='number' data-player='" + esc(p) + "' placeholder='0' style='width:90px'>";
+      inputs.appendChild(label);
+    });
+    var hb = el("history").querySelector("tbody");
+    hb.innerHTML = "";
+    game.rounds.forEach(function (r, i) {
+      var tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + (i + 1) + "</td><td>" +
+        game.players.map(function (p) { return esc(p) + ": " + (r[p] || 0); }).join(" · ") + "</td>";
+      hb.appendChild(tr);
+    });
+    var banner = el("winnerBanner");
+    if (game.finished) {
+      var max = Math.max.apply(null, game.players.map(function (p) { return t[p]; }));
+      var winners = game.players.filter(function (p) { return t[p] === max; });
+      banner.textContent = winners.length > 1
+        ? "🤝 It's a tie! " + winners.join(" & ") + " win with " + max + " points!"
+        : "🏆 " + winners[0] + " wins with " + max + " points!";
+      banner.classList.add("show");
+    } else {
+      banner.classList.remove("show");
+    }
+    renderSaved();
+  }
+
+  function renderSaved() {
+    var saved = load(SAVED_KEY) || [];
+    var box = el("savedList");
+    if (!saved.length) { box.innerHTML = "<p class='muted'>No saved games yet.</p>"; return; }
+    box.innerHTML = "";
+    saved.forEach(function (g, i) {
+      var div = document.createElement("div");
+      div.className = "saved";
+      div.innerHTML = "<strong>" + esc(g.winner) + "</strong> won on " + esc(g.date) +
+        "<div class='muted'>" + g.players.map(function (p) { return esc(p) + ": " + g.totals[p]; }).join(" · ") + "</div>";
+      var del = document.createElement("button");
+      del.className = "secondary"; del.textContent = "Delete";
+      del.onclick = function () {
+        var s = load(SAVED_KEY) || []; s.splice(i, 1); save(SAVED_KEY, s); renderSaved();
+      };
+      div.appendChild(del);
+      box.appendChild(div);
+    });
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  el("addPlayerBtn").onclick = function () {
+    var name = el("playerName").value.trim();
+    if (!name) { alert("Type a player name first."); return; }
+    if (game.players.indexOf(name) !== -1) { alert("That player is already in."); return; }
+    game.players.push(name);
+    el("playerName").value = "";
+    el("game").style.display = "block";
+    game.finished = false;
+    render();
+  };
+
+  el("startBtn").onclick = function () {
+    if (game.players.length < 2) { alert("Add at least 2 players first."); return; }
+    el("game").style.display = "block";
+    game.finished = false;
+    render();
+  };
+
+  el("newGameBtn").onclick = function () {
+    if (game.rounds.length && !confirm("Start a new game? The current one will be cleared (save it first with End game).")) return;
+    game = { players: [], rounds: [], finished: false };
+    el("game").style.display = "none";
+    render();
+  };
+
+  el("addRoundBtn").onclick = function () {
+    if (game.finished) { alert("This game is finished — start a new game."); return; }
+    var round = {};
+    var ok = true;
+    game.players.forEach(function (p) {
+      var input = document.querySelector("input[data-player='" + p.replace(/'/g, "\\'") + "']");
+      var v = input ? parseInt(input.value, 10) : NaN;
+      if (isNaN(v)) { ok = false; }
+      round[p] = isNaN(v) ? 0 : v;
+    });
+    if (!ok) { alert("Fill in every player's score for this round."); return; }
+    game.rounds.push(round);
+    render();
+  };
+
+  el("undoBtn").onclick = function () {
+    if (!game.rounds.length) { alert("Nothing to undo."); return; }
+    game.rounds.pop();
+    game.finished = false;
+    render();
+  };
+
+  el("endBtn").onclick = function () {
+    if (!game.rounds.length) { alert("Play at least one round first."); return; }
+    game.finished = true;
+    var t = totals();
+    var max = Math.max.apply(null, game.players.map(function (p) { return t[p]; }));
+    var winners = game.players.filter(function (p) { return t[p] === max; });
+    var saved = load(SAVED_KEY) || [];
+    saved.unshift({ date: new Date().toLocaleDateString(), players: game.players.slice(),
+      totals: t, winner: winners.join(" & ") });
+    save(SAVED_KEY, saved);
+    render();
+  };
+
+  el("exportBtn").onclick = function () {
+    var blob = new Blob([JSON.stringify(game, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "scorekeeper-game.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  el("importFile").onchange = function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var data = JSON.parse(reader.result);
+        if (!Array.isArray(data.players) || !Array.isArray(data.rounds)) throw new Error("bad file");
+        game = { players: data.players, rounds: data.rounds, finished: !!data.finished };
+        el("game").style.display = "block";
+        render();
+      } catch (err) { alert("That file is not a ScoreKeeper game."); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  if (game.players.length) el("game").style.display = "block";
+  render();
+})();
+</script>
+</body>
+</html>
